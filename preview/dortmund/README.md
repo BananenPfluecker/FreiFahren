@@ -17,3 +17,5 @@ The independent static preview is under `preview/dortmund/`; it does not call Fr
 - Do not use the upstream production Worker or Wrangler configuration for this preview.
 
 The expected Pages URL, *only after a successful deployment*, is `https://bananenpfluecker.github.io/FreiFahren/`.
+
+<!-- Trigger Pages preview rebuild after GitHub Pages settings change (2026-11-05). -->
