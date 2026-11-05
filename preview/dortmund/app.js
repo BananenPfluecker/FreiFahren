@@ -24,7 +24,8 @@ function render() {
  for(const line of visible) {
   const points = line.stationIds.map(id=>stops.get(id)).filter(Boolean);
   points.forEach(s=>stationIds.add(s.id));
-  if(points.length>1) L.polyline(points.map(s=>[s.lat,s.lng]),{color:/^#[0-9a-f]{6}$/i.test(line.color)&&line.color!=='#000000'?line.color:'#1769aa',weight:3,opacity:.65}).bindPopup('Linie '+escapeHtml(line.name)+' · schematische Verbindung').addTo(layer);
+  const hasGeometry = Array.isArray(line.geometry) && line.geometry.length > 0;
+  if(points.length>1) L.polyline(hasGeometry ? line.geometry : points.map(s=>[s.lat,s.lng]),{color:/^#[0-9a-f]{6}$/i.test(line.color)&&line.color!=='#000000'?line.color:'#1769aa',weight:3,opacity:hasGeometry?.8:.5,dashArray:hasGeometry?null:'6 7'}).bindPopup('Linie '+escapeHtml(line.name)+' · '+(hasGeometry?'Verlauf aus GTFS-Streckenkoordinaten':'Schematische Verbindung – Streckenkoordinaten fehlen')).addTo(layer);
  }
  for(const id of stationIds) {
   const s=stops.get(id); bounds.push([s.lat,s.lng]);
@@ -38,6 +39,8 @@ function render() {
   button.addEventListener('click',()=>{fit([[s.lat,s.lng]],16);markers.get(s.id).openPopup();});
   results.append(button);
  }
+ const geometryCount=visible.filter(l=>l.geometry?.length).length;
+ document.getElementById('geometry-status').textContent=visible.length ? geometryCount+' von '+visible.length+' Varianten mit GTFS-Verlauf. '+(geometryCount<visible.length?'Gestrichelt: schematisch, Streckenkoordinaten fehlen.':'Durchgezogen: Verlauf aus GTFS-Streckenkoordinaten.') : '';
  const count=new Set(visible.map(l=>l.type+'|'+l.name)).size;
  status.textContent=(visible.length ? count+' Linien · '+visible.length+' Varianten · '+stationIds.size+' Haltestellen' : 'Keine Treffer. Suche oder Verkehrsmittel ändern.')+' · Stand: '+(data.sourceDate||'VRR-GTFS');
  fit(matchingStops.length ? matchingStops.map(s=>[s.lat,s.lng]) : bounds, q?14:12);
