@@ -1,0 +1,60 @@
+name: Dortmund static preview (GitHub Pages)
+on:
+  push:
+    branches: [feature/dortmund-city-vrr]
+    paths:
+      - 'preview/dortmund/**'
+      - 'tools/gtfs/**'
+      - '.github/workflows/dortmund-pages.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: dortmund-pages
+  cancel-in-progress: true
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download official VRR GTFS (October 2026)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --connect-timeout 20 --max-time 300 \
+            'https://api.opendata-oepnv.de/dataset/496eea5d-d6ef-4dc2-aeb0-d15c4fbf3178/resource/2c652149-5901-4920-83ff-3a8faa3dbe5e/download/google_transit.zip' \
+            -o /tmp/vrr_gtfs.zip
+          python -m zipfile -t /tmp/vrr_gtfs.zip
+      - name: Validate importer
+        run: python -m unittest discover -s tools/gtfs -p 'test_*.py'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate reporting and warning logic
+        run: node --test preview/dortmund/site/tests/*.test.mjs
+      - name: Build Dortmund preview data
+        run: |
+          python tools/gtfs/dortmund_import.py /tmp/vrr_gtfs.zip --out /tmp/dortmund-export
+          python preview/dortmund/build_data.py /tmp/dortmund-export /tmp/dortmund-site/data/dortmund.json
+          cp preview/dortmund/index.html preview/dortmund/app.js preview/dortmund/app.css preview/dortmund/map-logic.mjs /tmp/dortmund-site/
+          python - <<'PY'
+          import json
+          with open('/tmp/dortmund-site/data/dortmund.json', encoding='utf-8') as f: data=json.load(f)
+          assert len(data['stations'])>100, 'Too few Dortmund stops'
+          assert len(data['lines'])>20, 'Too few Dortmund line variants'
+          print('Validated static preview data')
+          PY
+      - name: Configure or enable GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: /tmp/dortmund-site
+      - id: deployment
+        uses: actions/deploy-pages@v4

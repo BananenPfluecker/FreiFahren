@@ -1,4 +1,5 @@
 import { BERLIN } from './berlin'
+import { DORTMUND } from './dortmund'
 import { HAMBURG } from './hamburg'
 import { LEIPZIG } from './leipzig'
 import { MUNICH } from './munich'
@@ -15,6 +16,7 @@ import type { CityConfig } from './types'
 
 export * from './types'
 export { BERLIN }
+export { DORTMUND }
 export { HAMBURG }
 export { LEIPZIG }
 export { MUNICH }
@@ -37,6 +39,7 @@ export type { CityDatabaseSlug } from './databases'
  */
 export const CITIES = {
     berlin: BERLIN,
+    dortmund: DORTMUND,
     hamburg: HAMBURG,
     leipzig: LEIPZIG,
     munich: MUNICH,

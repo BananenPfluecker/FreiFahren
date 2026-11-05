@@ -1,0 +1,8 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';
+import {normalize,distanceMetres,reportRelevant,warningCandidates} from '../../map-logic.mjs';
+const stops=new Map([['a',{id:'a',name:'Hbf',lat:51.5,lng:7.4}],['b',{id:'b',name:'Hafen',lat:51.51,lng:7.4}],['b2',{id:'b2',name:'Hafen',lat:51.5101,lng:7.4}],['c',{id:'c',name:'Süd',lat:51.49,lng:7.4}]]);
+const report={id:'x',stationId:'a',lineName:'U41',directionId:'b',status:'confirmed',expiresAt:20000};
+const options={coords:{lat:51.5,lng:7.4,accuracy:20},now:10000,lastRefresh:9000,connected:true,stops,visibleStations:new Set(['a']),line:'U41',directionId:'b2'};
+test('line and equivalent platform direction restrict relevance; unknown direction remains explicit',()=>{assert.equal(reportRelevant(report,options),true);assert.equal(reportRelevant({...report,lineName:'S1'},options),false);assert.equal(reportRelevant({...report,directionId:'c'},options),false);assert.equal(reportRelevant({...report,directionId:null},options),true);assert.equal(reportRelevant({...report,status:'resolved'},options),false);});
+test('proximity warnings stop for stale, inaccurate, disconnected, muted or expired data',()=>{assert.equal(warningCandidates([report],options).length,1);for(const patch of [{connected:false},{coords:null},{coords:{...options.coords,accuracy:300}},{now:110000,lastRefresh:1000},{mutedUntil:20000},{coords:{lat:52,lng:7.4}}])assert.equal(warningCandidates([report],{...options,...patch}).length,0);assert.equal(warningCandidates([{...report,expiresAt:9999}],options).length,0);});
+test('distance and search normalization',()=>{assert.ok(distanceMetres(stops.get('a'),stops.get('b'))>1000);assert.equal(normalize('Dortmund Hauptbahnhof'),normalize('Dortmund Hbf'));});
