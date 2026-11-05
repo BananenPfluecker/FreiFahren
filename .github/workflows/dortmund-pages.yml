@@ -44,7 +44,10 @@ jobs:
           assert len(data['lines'])>20, 'Too few Dortmund line variants'
           print('Validated static preview data')
           PY
-      - uses: actions/configure-pages@v5
+      - name: Configure or enable GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: /tmp/dortmund-site
