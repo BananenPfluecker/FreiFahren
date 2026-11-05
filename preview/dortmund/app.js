@@ -54,8 +54,8 @@ function render(move=false){
    const highlighted=Boolean(selectedLine&&line.name===selectedLine.name);
    const path=geometry?line.geometry:points.map(s=>[s.lat,s.lng]);
    const lineWeight=highlighted?9:(chosen?6:5);
-   L.polyline(path,{color:'#071421',weight:lineWeight+5,opacity:.92,dashArray:geometry?null:'6 8',lineCap:'round',lineJoin:'round'}).addTo(networkLayer);
-   L.polyline(path,{color:highlighted?selectedColor:color,weight:lineWeight,opacity:highlighted?1:.94,dashArray:geometry?null:'6 8',lineCap:'round',lineJoin:'round'}).bindPopup(box).addTo(networkLayer);
+   L.polyline(path,{color:'#071421',weight:lineWeight+5,opacity:.92,dashArray:geometry?null:'3 4',lineCap:'round',lineJoin:'round'}).addTo(networkLayer);
+   L.polyline(path,{color:highlighted?selectedColor:color,weight:lineWeight,opacity:highlighted?1:.94,dashArray:geometry?null:'3 4',lineCap:'round',lineJoin:'round'}).bindPopup(box).addTo(networkLayer);
   }
  }
  const bounds=[];
