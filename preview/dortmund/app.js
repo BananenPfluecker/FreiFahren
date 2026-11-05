@@ -52,7 +52,10 @@ function render(move=false){
    const box=element('div');box.append(element('strong','Linie '+line.name),element('p',geometry?'Verlauf aus GTFS-Streckenkoordinaten':'Schematisch Â· Streckenkoordinaten fehlen'));
    const button=element('button','Nur diese Linie anzeigen');button.addEventListener('click',()=>selectLine(line.name));box.append(button);
    const highlighted=Boolean(selectedLine&&line.name===selectedLine.name);
-   L.polyline(geometry?line.geometry:points.map(s=>[s.lat,s.lng]),{color:highlighted?selectedColor:color,weight:highlighted?8:(chosen?4:3),opacity:highlighted?1:(chosen?.72:.62),dashArray:geometry?null:'6 8',lineCap:'round'}).bindPopup(box).addTo(networkLayer);
+   const path=geometry?line.geometry:points.map(s=>[s.lat,s.lng]);
+   const lineWeight=highlighted?9:(chosen?6:5);
+   L.polyline(path,{color:'#071421',weight:lineWeight+5,opacity:.92,dashArray:geometry?null:'6 8',lineCap:'round',lineJoin:'round'}).addTo(networkLayer);
+   L.polyline(path,{color:highlighted?selectedColor:color,weight:lineWeight,opacity:highlighted?1:.94,dashArray:geometry?null:'6 8',lineCap:'round',lineJoin:'round'}).bindPopup(box).addTo(networkLayer);
   }
  }
  const bounds=[];
