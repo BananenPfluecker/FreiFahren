@@ -1,11 +1,17 @@
 'use strict';
-const $=id=>document.getElementById(id), normalize=value=>String(value).toLocaleLowerCase('de').replace(/hauptbahnhof/g,'hbf').replace(/ß/g,'ss').normalize('NFD').replace(/[\u0300-\u036f\s-]/g,'');
+import { normalize, distanceMetres, sameDirection, reportRelevant, warningCandidates, qualityLabel } from './map-logic.mjs';
+const $=id=>document.getElementById(id);
 const map=L.map('map',{preferCanvas:true,zoomControl:false}).setView([51.5136,7.4653],12);
 L.control.zoom({position:'bottomright'}).addTo(map);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}).addTo(map);
 const networkLayer=L.layerGroup().addTo(map), reportLayer=L.layerGroup().addTo(map);
 let data,stops,stationLines,uniqueLines,visibleStations=new Set(),markers=new Map(),kind='',reports=[],apiReady=false,formStation=null,submissionId=null,loadingReports=false,toastTimer,clockOffset=0;
+let lastRefresh=0,coords=null,locationWatch=null,locationMarker=null,accuracyCircle=null,mutedUntil=0,audio=null;
+const alerted=new Map();
+let prefs={theme:'dark',warnEnabled:false,radius:600,sound:false,vibration:false};
+try{Object.assign(prefs,JSON.parse(localStorage.getItem('dortmund-preferences')||'{}'));}catch{}
 const hosted=new URLSearchParams(location.search).get('reports')==='1';
+async function apiFetch(url,options={}){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);try{return await fetch(url,{...options,signal:controller.signal});}catch{throw Error('Verbindung unterbrochen. Bitte erneut versuchen.');}finally{clearTimeout(timer);}}
 function element(tag,text,className){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(className)el.className=className;return el;}
 function badge(name){return element('span',name||'Linie unbekannt','badge');}
 function toast(message){$('toast').textContent=message;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,4500);}
@@ -18,8 +24,9 @@ function populateLines(){
  $('line').replaceChildren(new Option('Alle Linien',''));
  for(const line of uniqueLines.filter(l=>!kind||l.type===kind))$('line').add(new Option(line.name,line.name));
  if([...$('line').options].some(o=>o.value===selected))$('line').value=selected;
+ updateTripDirections();
 }
-function selectLine(name){$('search').value='';$('line').value=name;$('explore').open=false;render(true);}
+function selectLine(name){$('search').value='';$('line').value=name;$('explore').open=false;updateTripDirections();render(true);}
 function stationPopup(station){
  const box=element('div');box.append(element('strong',station.name));
  for(const name of stationLines.get(station.id)||[])box.append(badge(name),' ');
@@ -64,30 +71,56 @@ function render(move=false){
  renderReports();
 }
 function formatAge(created){const minutes=Math.max(0,Math.floor((Date.now()+clockOffset-created)/60000));return minutes<1?'Gerade eben':'vor '+minutes+' Min.';}
+function filteredReports(){return reports.filter(r=>r.expiresAt>Date.now()+clockOffset&&reportRelevant(r,{line:$('line').value,directionId:$('trip-direction').value,visibleStations,stops,showEnded:$('show-ended').checked}));}
 function renderReports(){
  if(!data)return;
- const active=reports.filter(r=>r.expiresAt>Date.now()+clockOffset && visibleStations.has(r.stationId) && (!$('line').value || !r.lineName || r.lineName===$('line').value));
- reportLayer.clearLayers();$('feed-items').replaceChildren();
- $('reports-count').textContent=apiReady?active.length+' Meldung'+(active.length===1?'':'en'):'Meldungen';
- if(!apiReady){const box=element('div',undefined,'empty-state');box.append(element('strong',hosted?'Verbindung unterbrochen':'Meldungen in der privaten App'),element('p',hosted?'Meldungen können gerade nicht geladen werden. Versuche es mit Aktualisieren erneut.':'Die GitHub-Karte zeigt nur das Netz. Zum Melden die private App öffnen.'));if(!hosted){const link=element('a','Private App öffnen');link.href='https://freifahren-dortmund-pruefung.bravehost.chatgpt.site';link.target='_blank';link.rel='noopener';box.append(link);}$('feed-items').append(box);return;}
- if(!active.length){const box=element('div',undefined,'empty-state');box.append(element('strong','Noch keine Meldungen'),element('p','Für diese Ansicht liegen keine Testmeldungen aus den letzten 60 Minuten vor. Das bedeutet nicht, dass keine Kontrolle stattfindet.'));$('feed-items').append(box);}
+ const active=filteredReports();reportLayer.clearLayers();$('feed-items').replaceChildren();
+ $('reports-count').textContent=!apiReady&&!lastRefresh?'Meldungen':(apiReady?'':'Archiv · ')+active.filter(r=>r.status!=='resolved').length+' Meldung'+(active.filter(r=>r.status!=='resolved').length===1?'':'en');
+ $('freshness-status').textContent=!hosted?'Nur Netzkarte.':lastRefresh?'Zuletzt geladen: '+formatAge(lastRefresh)+(apiReady?'':' · Nicht verbunden, gespeicherter Stand'):'Noch keine Meldungen geladen.';
+ if(!apiReady){const box=element('div',undefined,'empty-state');box.append(element('strong',hosted?'Keine aktuelle Verbindung':'Meldungen in der privaten App'),element('p',hosted?'Gespeicherte Meldungen können veraltet sein. Umkreishinweise sind angehalten. Bitte aktualisieren.':'Die GitHub-Karte zeigt das Netz. Zum Melden die private App öffnen.'));if(!hosted){const link=element('a','Private App öffnen');link.href='https://freifahren-dortmund-pruefung.bravehost.chatgpt.site';link.target='_blank';link.rel='noopener';box.append(link);}$('feed-items').append(box);}
+ if(!active.length&&apiReady){const box=element('div',undefined,'empty-state');box.append(element('strong','Keine passenden Meldungen'),element('p','Für diese Auswahl liegen keine aktuellen Testmeldungen vor. Das ist keine Entwarnung.'));$('feed-items').append(box);}
  for(const report of active){
   const station=stops.get(report.stationId);if(!station)continue;
-  const card=element('article',undefined,'report-card');card.append(badge(report.lineName),element('strong',station.name));
-  if(report.directionId)card.append(element('p','Richtung '+(stops.get(report.directionId)?.name||'unbekannt')));
-  const footer=element('footer');footer.append(element('span',formatAge(report.createdAt)+' · unbestätigt'));
-  if(report.own){const button=element('button','Entfernen');button.setAttribute('aria-label','Eigene Meldung an '+station.name+' entfernen');button.onclick=()=>deleteReport(report.id,button);footer.append(button);}card.append(footer);$('feed-items').append(card);
-  const popup=element('div');popup.append(element('strong',station.name),element('p',(report.lineName?'Linie '+report.lineName+' · ':'')+formatAge(report.createdAt)),element('p','Unbestätigte Testmeldung'));
-  L.circleMarker([station.lat,station.lng],{radius:11,weight:2,color:'#ffb4a2',fillColor:'#ff665f',fillOpacity:.8}).bindPopup(popup).addTo(reportLayer);
+  const card=element('article',undefined,'report-card '+report.status);card.append(badge(report.lineName),element('span',qualityLabel(report.status),'quality '+report.status),element('strong',station.name));
+  card.append(element('p',report.directionId?'Richtung '+(stops.get(report.directionId)?.name||'unbekannt'):'Fahrtrichtung unbekannt'));
+  card.append(element('p','Zuletzt gesehen: '+formatAge(report.lastSeenAt),'last-seen'));
+  card.append(element('p',(report.seenBy===1?'Eine sichtende Anmeldung':report.seenBy+' sichtende Anmeldungen')+(report.clearBy?' · '+report.clearBy+' × nicht mehr vorhanden':'')));
+  if(report.lastConfirmedAt)card.append(element('p','Weitere Bestätigung: '+formatAge(report.lastConfirmedAt)));
+  if(report.uncertainBy)card.append(element('p',report.uncertainBy+' × unsicher (ohne Auswirkung auf die Laufzeit)'));
+  if(coords)card.append(element('p',Math.round(distanceMetres(coords,station))+' m Luftlinie entfernt'));
+  const actions=element('div',undefined,'feedback-actions');
+  for(const [kind,label] of [['seen','Noch da'],['clear','Nicht mehr da'],['unsure','Unsicher']]){
+   if(report.status==='resolved'&&kind!=='seen')continue;
+   const button=element('button',label);button.disabled=!apiReady;button.setAttribute('aria-pressed',String(report.myFeedback===kind));button.onclick=()=>sendFeedback(report,kind,button);actions.append(button);
+  }
+  card.append(actions);
+  const footer=element('footer');footer.append(element('span','Erste Meldung: '+formatAge(report.createdAt)));
+  if(report.own){const button=element('button','Meine Sichtung zurückziehen');button.disabled=!apiReady;button.onclick=()=>deleteReport(report.id,button);footer.append(button);}
+  card.append(footer);$('feed-items').append(card);
+  const popup=element('div');popup.append(element('strong',station.name),element('p',(report.lineName?'Linie '+report.lineName+' · ':'')+qualityLabel(report.status)),element('p','Zuletzt gesehen '+formatAge(report.lastSeenAt)));
+  const button=element('button','Meldung bewerten');button.onclick=()=>{$('feed').hidden=false;card.scrollIntoView({block:'nearest'});};popup.append(button);
+  const color=report.status==='resolved'?'#92a5a5':report.status==='disputed'?'#ffc36a':'#ff665f';
+  L.circleMarker([station.lat,station.lng],{radius:11,weight:2,color,fillColor:color,fillOpacity:.8}).bindPopup(popup).addTo(reportLayer);
  }
+ updateWarningState();checkWarnings();
 }
 async function fetchReports(){
  if(!hosted||loadingReports)return;loadingReports=true;
- try{const response=await fetch('/api/reports',{cache:'no-store'});if(!response.ok)throw Error('API');const body=await response.json();if(!Array.isArray(body.reports))throw Error('Invalid response');reports=body.reports;clockOffset=body.serverTime-Date.now();apiReady=true;$('connection').textContent='Verbunden';}
- catch{apiReady=false;$('connection').textContent='Nicht verbunden';}
+ try{
+  const response=await apiFetch('/api/reports',{cache:'no-store'});if(!response.ok)throw Error('API');const body=await response.json();if(!Array.isArray(body.reports))throw Error('Invalid response');reports=body.reports;clockOffset=body.serverTime-Date.now();lastRefresh=body.serverTime;apiReady=true;$('connection').textContent='Verbunden';
+ }catch{apiReady=false;$('connection').textContent='Nicht verbunden';}
  finally{loadingReports=false;$('open-report').disabled=!apiReady||!data;renderReports();}
 }
-async function deleteReport(id,button){button.disabled=true;try{const response=await fetch('/api/reports/'+id,{method:'DELETE'});if(!response.ok)throw Error('Delete failed');reports=reports.filter(r=>r.id!==id);renderReports();toast('Testmeldung entfernt.');}catch{button.disabled=false;toast('Entfernen fehlgeschlagen. Bitte erneut versuchen.');}}
+async function sendFeedback(report,kind,button){
+ const requestId=button.dataset.requestId||crypto.randomUUID();button.dataset.requestId=requestId;button.disabled=true;
+ try{const response=await apiFetch('/api/reports/'+report.id+'/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:requestId,kind})});if(!response.ok){const body=await response.json().catch(()=>({}));throw Error(body.code==='COOLDOWN'?'Bitte 10 Sekunden zwischen Rückmeldungen warten.':body.code==='REPORT_EXPIRED'?'Diese Meldung ist inzwischen abgelaufen. Bitte aktualisieren.':'Rückmeldung konnte nicht gespeichert werden.');}toast(kind==='unsure'?'Unsicherheit vermerkt · Laufzeit bleibt unverändert.':'Rückmeldung gespeichert.');await fetchReports();}catch(error){button.disabled=false;toast(error.message);}
+}
+async function deleteReport(id,button){button.disabled=true;try{const response=await apiFetch('/api/reports/'+id,{method:'DELETE'});if(!response.ok)throw Error();toast('Deine Sichtung wurde zurückgezogen. Andere Sichtungen bleiben erhalten.');await fetchReports();}catch{button.disabled=false;toast('Zurückziehen fehlgeschlagen. Bitte erneut versuchen.');}}
+function updateTripDirections(){
+ const prior=$('trip-direction').value;$('trip-direction').replaceChildren(new Option('Alle Fahrtrichtungen',''));const line=$('line').value;$('trip-direction').hidden=!line;
+ if(line){const endpoints=new Map();for(const id of new Set(linePatterns(line).flatMap(l=>[l.stationIds[0],l.stationIds.at(-1)]))){const s=stops.get(id);if(s&&!endpoints.has(normalize(s.name)))endpoints.set(normalize(s.name),s);}for(const s of endpoints.values())$('trip-direction').add(new Option('Richtung '+s.name,s.id));}
+ if([...$('trip-direction').options].some(o=>o.value===prior))$('trip-direction').value=prior;
+}
 function updateFormLines(){
  const current=$('report-line').value;$('report-line').replaceChildren(new Option('Nicht bekannt',''));
  if(formStation)for(const name of stationLines.get(formStation)||[])$('report-line').add(new Option(name,name));
@@ -100,14 +133,13 @@ function updateDirections(){
  const ids=new Set(linePatterns(line,formStation).flatMap(l=>[l.stationIds[0],l.stationIds.at(-1)]).filter(id=>id!==formStation));
  for(const id of ids)$('direction').add(new Option(stops.get(id)?.name||id,id));
 }
-function chooseFormStation(id){formStation=id;$('station-query').value=stops.get(id).name;$('station-options').replaceChildren();$('chosen-station').textContent='Ausgewählt: '+stops.get(id).name;$('chosen-station').hidden=false;updateFormLines();submissionId=null;}
+function chooseFormStation(id){formStation=id;$('station-query').value=stops.get(id).name;$('station-options').replaceChildren();$('chosen-station').textContent='Ausgewählt: '+stops.get(id).name;$('chosen-station').hidden=false;updateFormLines();if(stationLines.get(id)?.includes($('line').value)){$('report-line').value=$('line').value;updateDirections();if([...$('direction').options].some(o=>o.value===$('trip-direction').value))$('direction').value=$('trip-direction').value;}submissionId=null;}
 function openReport(stationId){
  if(!data)return;
  if(!hosted){window.open('https://freifahren-dortmund-pruefung.bravehost.chatgpt.site','_blank','noopener');return;}
  if(!apiReady){toast('Meldungen sind gerade nicht erreichbar. Bitte aktualisieren.');return;}
  $('report-form').reset();$('form-error').textContent='';$('station-options').replaceChildren();$('chosen-station').hidden=true;formStation=null;submissionId=null;updateFormLines();
  if(stationId)chooseFormStation(stationId);
- if(stationId&&stationLines.get(stationId)?.includes($('line').value)){$('report-line').value=$('line').value;updateDirections();}
  $('report-dialog').showModal();$('station-query').focus();
 }
 $('station-query').addEventListener('input',()=>{
@@ -123,15 +155,15 @@ $('report-form').addEventListener('submit',async event=>{
  if(!formStation){$('form-error').textContent='Bitte eine Haltestelle aus den Suchtreffern auswählen.';$('station-query').focus();return;}
  const button=$('submit-report');button.disabled=true;button.textContent='Speichere …';submissionId ||= crypto.randomUUID();
  try{
-  const response=await fetch('/api/reports',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:submissionId,stationId:formStation,lineName:$('report-line').value||null,directionId:$('direction').value||null})});
+  const response=await apiFetch('/api/reports',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:submissionId,stationId:formStation,lineName:$('report-line').value||null,directionId:$('direction').value||null})});
   if(!response.ok){const body=await response.json().catch(()=>({}));const messages={COOLDOWN:'Bitte warte eine Minute zwischen zwei Meldungen.',AUTH_REQUIRED:'Bitte melde dich erneut in der privaten App an.',INVALID_LINE:'Diese Linie hält nicht an der gewählten Haltestelle.',INVALID_STATION:'Bitte eine gültige Haltestelle auswählen.',INVALID_DIRECTION:'Bitte die Fahrtrichtung erneut auswählen.'};throw Error(messages[body.code]||'Speichern fehlgeschlagen. Bitte erneut versuchen.');}
-  $('report-dialog').close();toast('Testmeldung gespeichert · 60 Minuten sichtbar.');$('feed').hidden=false;submissionId=null;await fetchReports();
+  const saved=await response.json();$('report-dialog').close();toast(saved.merged?'Sichtung mit vorhandener Meldung zusammengeführt.':'Testmeldung gespeichert · 60 Minuten ab letzter Sichtung.');$('feed').hidden=false;submissionId=null;await fetchReports();
  }catch(error){$('form-error').textContent=error.message;}
  finally{button.disabled=false;button.textContent='Testmeldung speichern';}
 });
-$('search').addEventListener('input',()=>render(true));$('line').onchange=()=>render(true);
+$('search').addEventListener('input',()=>render(true));$('line').onchange=()=>{updateTripDirections();render(true);};$('trip-direction').onchange=()=>renderReports();$('show-ended').onchange=renderReports;
 for(const button of document.querySelectorAll('[data-mode]'))button.onclick=()=>{kind=button.dataset.mode;for(const tab of document.querySelectorAll('[data-mode]'))tab.setAttribute('aria-pressed',String(tab===button));populateLines();render(true);};
-$('reset').onclick=()=>{kind='';$('search').value='';$('explore').open=false;for(const tab of document.querySelectorAll('[data-mode]'))tab.setAttribute('aria-pressed',String(tab.dataset.mode===''));populateLines();$('line').value='';render(true);};
+$('reset').onclick=()=>{kind='';$('search').value='';$('explore').open=false;for(const tab of document.querySelectorAll('[data-mode]'))tab.setAttribute('aria-pressed',String(tab.dataset.mode===''));populateLines();$('line').value='';updateTripDirections();render(true);};
 $('show-reports').onclick=()=>{$('feed').hidden=!$('feed').hidden;if(!$('feed').hidden)fetchReports();};$('close-feed').onclick=()=>$('feed').hidden=true;$('refresh').onclick=fetchReports;
 $('open-report').onclick=()=>openReport();$('close-report').onclick=()=>$('report-dialog').close();$('info').onclick=()=>$('info-dialog').showModal();$('close-info').onclick=()=>$('info-dialog').close();
 new ResizeObserver(()=>{map.invalidateSize();}).observe($('map'));
@@ -147,5 +179,64 @@ async function load(){
   if(hosted)await fetchReports();else{$('connection').textContent='Nur Netzkarte';$('open-report').disabled=false;renderReports();}
  }catch{$('status').textContent='Fahrplandaten konnten nicht geladen werden. Bitte die Seite neu laden.';$('connection').textContent='Daten fehlen';}
 }
-setInterval(()=>{if(!document.hidden)fetchReports();},30000);setInterval(()=>{if(data)renderReports();},60000);
-load();
+setInterval(()=>{if(!document.hidden)fetchReports();},30000);setInterval(()=>{if(data)renderReports();},10000);
+function savePrefs(){prefs.mutedUntil=mutedUntil;try{localStorage.setItem('dortmund-preferences',JSON.stringify(prefs));}catch{}}
+function applyTheme(){document.body.classList.toggle('theme-light',prefs.theme==='light'||(prefs.theme==='auto'&&matchMedia('(prefers-color-scheme:light)').matches));}
+function updateWarningState(){
+ const now=Date.now()+clockOffset;
+ let text=!prefs.warnEnabled?'Umkreishinweise sind ausgeschaltet.':mutedUntil>now?'Stumm für noch '+Math.ceil((mutedUntil-now)/60000)+' Min.':!coords?'Für Umkreishinweise zuerst Standort aktivieren.':coords.accuracy>200?'Standort zu ungenau. Hinweise angehalten.':!apiReady||now-lastRefresh>90000?'Daten nicht aktuell. Hinweise angehalten.':'Hinweise aktiv · '+prefs.radius+' m · nur in der sichtbaren App.';
+ if(prefs.warnEnabled&&prefs.sound&&audio?.state!=='running')text+=' Ton nach dem Öffnen einmal über „Ton testen“ freigeben.';
+ $('warning-state').textContent=text;$('mute').textContent=mutedUntil>now?'Stummschaltung beenden ('+Math.ceil((mutedUntil-now)/60000)+' Min.)':'Für 5 Minuten stumm';
+}
+async function prepareAudio(){
+ const Context=window.AudioContext||window.webkitAudioContext;if(!Context){toast('Hinweiston wird hier nicht unterstützt.');return false;}
+ audio ||= new Context();try{await audio.resume();return audio.state==='running';}catch{return false;}
+}
+function playTone(){
+ if(audio?.state!=='running')return;const oscillator=audio.createOscillator(),gain=audio.createGain();oscillator.connect(gain);gain.connect(audio.destination);oscillator.frequency.value=660;gain.gain.setValueAtTime(.001,audio.currentTime);gain.gain.exponentialRampToValueAtTime(.08,audio.currentTime+.03);gain.gain.exponentialRampToValueAtTime(.001,audio.currentTime+.35);oscillator.start();oscillator.stop(audio.currentTime+.36);
+}
+function checkWarnings(){
+ if(!data||!prefs.warnEnabled||document.hidden)return;
+ const now=Date.now()+clockOffset,candidates=warningCandidates(reports,{coords,now,lastRefresh,connected:apiReady,mutedUntil,radius:Number(prefs.radius),line:$('line').value,directionId:$('trip-direction').value,visibleStations,stops});
+ const fresh=candidates.filter(r=>{const prior=alerted.get(r.id);return !prior||(r.lastSeenAt>prior.lastSeenAt&&now-prior.at>=900000);});if(!fresh.length)return;
+ fresh.forEach(r=>alerted.set(r.id,{at:now,lastSeenAt:r.lastSeenAt}));const report=fresh.sort((a,b)=>distanceMetres(coords,stops.get(a.stationId))-distanceMetres(coords,stops.get(b.stationId)))[0],station=stops.get(report.stationId);
+ $('nearby-title').textContent=fresh.length>1?fresh.length+' Meldungen im Umkreis':'Testmeldung im Umkreis';
+ const message=(report.lineName?'Linie '+report.lineName+' · ':'Linie unbekannt · ')+station.name+' · ca. '+Math.round(distanceMetres(coords,station))+' m Luftlinie · '+qualityLabel(report.status);
+ $('nearby-text').textContent=message;$('nearby-hint').hidden=false;
+ if(prefs.sound)playTone();if(prefs.vibration&&navigator.vibrate)navigator.vibrate([150,80,150]);
+ if(prefs.notifications&&'Notification' in window&&Notification.permission==='granted'){try{new Notification('FreiFahren · Testmeldung im Umkreis',{body:message,tag:'dortmund-'+report.id});}catch{}}
+}
+function stopLocation(){
+ if(locationWatch!==null)navigator.geolocation?.clearWatch(locationWatch);locationWatch=null;coords=null;
+ if(locationMarker){map.removeLayer(locationMarker);locationMarker=null;}if(accuracyCircle){map.removeLayer(accuracyCircle);accuracyCircle=null;}
+ $('stop-location').disabled=true;$('locate').disabled=false;$('location-status').textContent='Standort ist ausgeschaltet.';$('nearby-hint').hidden=true;if(data)renderReports();
+}
+function locate(){
+ if(!navigator.geolocation){$('location-status').textContent='Standort wird von diesem Browser nicht unterstützt.';return;}
+ $('location-status').textContent='Warte auf Standortfreigabe …';$('locate').disabled=true;let first=true;
+ locationWatch=navigator.geolocation.watchPosition(position=>{
+  coords={lat:position.coords.latitude,lng:position.coords.longitude,accuracy:position.coords.accuracy};
+  if(!locationMarker)locationMarker=L.circleMarker([coords.lat,coords.lng],{radius:7,fillColor:'#75b9ff',color:'#e1f1ff',weight:3,fillOpacity:1}).bindPopup('Dein Standort · nicht im Meldespeicher abgelegt').addTo(map);else locationMarker.setLatLng([coords.lat,coords.lng]);
+  if(accuracyCircle)map.removeLayer(accuracyCircle);accuracyCircle=L.circle([coords.lat,coords.lng],{radius:Math.min(coords.accuracy,2000),color:'#75b9ff',weight:1,fillOpacity:.05}).addTo(map);
+  $('stop-location').disabled=false;$('location-status').textContent='Standort aktiv · Genauigkeit ca. '+Math.round(coords.accuracy)+' m.';
+  if(first){fit([[coords.lat,coords.lng]],15);first=false;}if(data)renderReports();
+ },error=>{stopLocation();$('location-status').textContent=error.code===1?'Standort nicht freigegeben. Die App funktioniert auch ohne Standort.':'Standort gerade nicht verfügbar. Bitte erneut versuchen.';},{enableHighAccuracy:true,maximumAge:15000,timeout:15000});
+}
+function notificationStatus(){
+ const supported='Notification' in window;
+ $('notification-status').textContent=!supported?'Systemhinweise werden hier nicht unterstützt.':Notification.permission==='denied'?'Im Browser gesperrt. Bei Bedarf in den Website-Einstellungen ändern.':prefs.notifications&&Notification.permission==='granted'?'Systemhinweise eingeschaltet.':'Systemhinweise ausgeschaltet.';
+ $('enable-notifications').disabled=!supported||Notification.permission==='denied';$('enable-notifications').textContent=prefs.notifications?'Systemhinweise ausschalten':'Systemhinweise erlauben';
+}
+prefs.theme=['dark','light','auto'].includes(prefs.theme)?prefs.theme:'dark';prefs.radius=[300,600,1000].includes(Number(prefs.radius))?Number(prefs.radius):600;mutedUntil=Number(prefs.mutedUntil)||0;
+$('map-theme').value=prefs.theme;$('warn-radius').value=String(prefs.radius);$('warn-enabled').checked=!!prefs.warnEnabled;$('sound-enabled').checked=!!prefs.sound;$('vibration-enabled').checked=!!prefs.vibration;$('vibration-enabled').disabled=!('vibrate' in navigator);
+$('map-theme').onchange=()=>{prefs.theme=$('map-theme').value;savePrefs();applyTheme();};matchMedia('(prefers-color-scheme:light)').addEventListener('change',applyTheme);
+$('warn-enabled').onchange=()=>{prefs.warnEnabled=$('warn-enabled').checked;savePrefs();updateWarningState();checkWarnings();};$('warn-radius').onchange=()=>{prefs.radius=Number($('warn-radius').value);savePrefs();updateWarningState();checkWarnings();};
+$('sound-enabled').onchange=async()=>{prefs.sound=$('sound-enabled').checked;if(prefs.sound)await prepareAudio();savePrefs();updateWarningState();};$('test-sound').onclick=async()=>{if(await prepareAudio())playTone();updateWarningState();};
+$('vibration-enabled').onchange=()=>{prefs.vibration=$('vibration-enabled').checked;savePrefs();};
+$('enable-notifications').onclick=async()=>{if(prefs.notifications){prefs.notifications=false;}else if('Notification' in window){try{prefs.notifications=(await Notification.requestPermission())==='granted';}catch{prefs.notifications=false;}}savePrefs();notificationStatus();};
+$('mute').onclick=()=>{mutedUntil=mutedUntil>Date.now()+clockOffset?0:Date.now()+clockOffset+300000;savePrefs();updateWarningState();};
+$('locate').onclick=locate;$('stop-location').onclick=stopLocation;
+$('settings').onclick=()=>{updateWarningState();notificationStatus();$('settings-dialog').showModal();};$('close-settings').onclick=()=>$('settings-dialog').close();
+$('nearby-open').onclick=()=>{$('feed').hidden=false;$('nearby-hint').hidden=true;};$('nearby-dismiss').onclick=()=>$('nearby-hint').hidden=true;
+window.addEventListener('online',fetchReports);window.addEventListener('offline',()=>{apiReady=false;$('connection').textContent='Offline';$('open-report').disabled=true;renderReports();});document.addEventListener('visibilitychange',()=>{if(!document.hidden)fetchReports();});
+applyTheme();notificationStatus();updateWarningState();load();

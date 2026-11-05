@@ -32,11 +32,16 @@ jobs:
           python -m zipfile -t /tmp/vrr_gtfs.zip
       - name: Validate importer
         run: python -m unittest discover -s tools/gtfs -p 'test_*.py'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate reporting and warning logic
+        run: node --test preview/dortmund/site/tests/*.test.mjs
       - name: Build Dortmund preview data
         run: |
           python tools/gtfs/dortmund_import.py /tmp/vrr_gtfs.zip --out /tmp/dortmund-export
           python preview/dortmund/build_data.py /tmp/dortmund-export /tmp/dortmund-site/data/dortmund.json
-          cp preview/dortmund/index.html preview/dortmund/app.js preview/dortmund/app.css /tmp/dortmund-site/
+          cp preview/dortmund/index.html preview/dortmund/app.js preview/dortmund/app.css preview/dortmund/map-logic.mjs /tmp/dortmund-site/
           python - <<'PY'
           import json
           with open('/tmp/dortmund-site/data/dortmund.json', encoding='utf-8') as f: data=json.load(f)
