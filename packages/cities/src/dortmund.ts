@@ -33,8 +33,8 @@ export const DORTMUND: CityConfig = {
         osmRouteTypeAliases: { subway: 'light_rail' },
         routeRefPatterns: {
             light_rail: '^U4[1-9]$',
-            train: '^S\\s?\\d+$',
-            bus: '^\\d{3}$',
+            train: '^S\s?\d+$',
+            bus: '^\d{3}$',
         },
         colors: {},
         defaultLineColor: '#000000',
@@ -50,11 +50,11 @@ export const DORTMUND: CityConfig = {
         circularLinePattern: '',
         abbreviations: [
             [String.raw`straße`, 'strasse'],
-            [String.raw`str\\.?(?=\\s|$|/|,|\\)|-)`, 'strasse'],
-            [String.raw`\\bhbf\\.?\\b`, 'hauptbahnhof'],
-            [String.raw`\\bbhf\\.?\\b`, 'bahnhof'],
+            [String.raw`str\.?(?=\s|$|/|,|\)|-)`, 'strasse'],
+            [String.raw`\bhbf\.?\b`, 'hauptbahnhof'],
+            [String.raw`\bbhf\.?\b`, 'bahnhof'],
         ],
-        promptExamples: 'Message: "U41 Kontrolle Kampstraße Richtung Hörde"\\n{"stationName":"Kampstraße","directionName":"Hörde"}',
+        promptExamples: 'Message: "U41 Kontrolle Kampstraße Richtung Hörde"\n{"stationName":"Kampstraße","directionName":"Hörde"}',
     },
     community: {},
 }
