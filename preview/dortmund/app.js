@@ -204,7 +204,7 @@ function checkWarnings(){
  const message=(report.lineName?'Linie '+report.lineName+' · ':'Linie unbekannt · ')+station.name+' · ca. '+Math.round(distanceMetres(coords,station))+' m Luftlinie · '+qualityLabel(report.status);
  $('nearby-text').textContent=message;$('nearby-hint').hidden=false;
  if(prefs.sound)playTone();if(prefs.vibration&&navigator.vibrate)navigator.vibrate([150,80,150]);
- if(prefs.notifications&&'Notification' in window&&Notification.permission==='granted'){try{new Notification('FreiFahren · Testmeldung im Umkreis',{body:message,tag:'dortmund-'+report.id});}catch{}}
+ if(prefs.notifications&&'Notification' in window&&Notification.permission==='granted'){try{new Notification('FahrtRadar · Testmeldung im Umkreis',{body:message,tag:'dortmund-'+report.id});}catch{}}
 }
 function stopLocation(){
  if(locationWatch!==null)navigator.geolocation?.clearWatch(locationWatch);locationWatch=null;coords=null;
